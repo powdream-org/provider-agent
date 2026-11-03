@@ -5,7 +5,7 @@
 PROF_ID='glm'
 PROF_LABEL='GLM'
 PROF_PROVIDER_NAME='Z.ai'
-PROF_VERSION='1.2.1'
+PROF_VERSION='1.3.0'
 PROF_HOME_DIR='.glm'
 
 PROF_DEFAULT_BASE_URL='https://api.z.ai/api/anthropic'

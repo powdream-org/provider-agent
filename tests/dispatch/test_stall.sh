@@ -10,9 +10,10 @@ make_brief burn.md $'# Task\nBURN_CPU\n'
 CPU_PROBE="$TEST_ROOT/cpu-probe.sh"
 cat >"$CPU_PROBE" <<'PROBE'
 set -Eeuo pipefail
-source "$1/scripts/lib/dispatch-common.sh"
-source "$1/scripts/lib/dispatch-quota.sh"
-source "$1/scripts/lib/dispatch-wait.sh"
+DD_NAME='glm-dispatch'
+source "$1/core/dispatch/dispatch-common.sh"
+source "$1/core/dispatch/dispatch-quota.sh"
+source "$1/core/dispatch/dispatch-wait.sh"
 printf '10 0:01.50\n10 1:02:03.25\n10 2-01:00:00.00\n11 5:00.00\n' | dd_sum_cpu_times 10
 printf '12 0:00.00\n' | dd_sum_cpu_times 99
 PROBE

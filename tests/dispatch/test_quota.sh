@@ -32,11 +32,14 @@ quota_invalid() {
 GATE_SCRIPT="$TEST_ROOT/gate-probe.sh"
 cat >"$GATE_SCRIPT" <<'PROBE'
 set -Eeuo pipefail
-source "$1/scripts/lib/dispatch-common.sh"
-source "$1/scripts/lib/dispatch-quota.sh"
+DD_NAME='glm-dispatch'
+DD_EVT_BLOCKED='GLM_BLOCKED'
+source "$1/core/dispatch/dispatch-common.sh"
+source "$1/core/dispatch/dispatch-quota.sh"
 DD_CLI="$2"
 DD_SMALL="$3"
 DD_EST_CREDITS="$4"
+PROF_QUOTA_BACKEND='monitor'
 dd_gate_quota
 printf 'PASS scope=%s q5=%s q1w=%s\n' "$DD_QUOTA_SCOPE" "$DD_QUOTA_5H_USED" "$DD_QUOTA_1W_USED"
 PROBE

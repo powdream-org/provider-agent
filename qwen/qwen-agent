@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ENTRY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROF_ENTRY_PATH="$ENTRY_DIR/${BASH_SOURCE[0]##*/}"
+
+# shellcheck source=../core/providers/qwen.sh
+. "$ENTRY_DIR/../core/providers/qwen.sh"
+# shellcheck source=../core/agent-core.sh
+. "$ENTRY_DIR/../core/agent-core.sh"

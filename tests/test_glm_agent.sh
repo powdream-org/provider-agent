@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$TESTS_DIR/.." && pwd -P)"
-SCRIPT="$REPO_DIR/glm-agent"
+SCRIPT="$REPO_DIR/glm/glm-agent"
 TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_BASE="${TEMP_BASE%/}"
 TEST_ROOT="$(mktemp -d "$TEMP_BASE/glm-agent-test.XXXXXX")"
@@ -378,6 +378,24 @@ file_mode() {
   stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
 }
 
+# A portable timeout: runs "$@" after the initial seconds argument under a
+# wall-clock limit. macOS has no gtimeout by default.
+run_with_timeout() {
+  local secs="$1"
+  shift
+  "$@" &
+  local pid=$!
+  # The watcher must not inherit stdout: inside a command substitution it
+  # would hold the capture pipe open until its own sleep ends.
+  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local watcher=$!
+  local rc=0
+  wait "$pid" || rc=$?
+  kill -KILL "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  return "$rc"
+}
+
 meta_get_test() {
   local meta="$1" key="$2"
   sed -n "s/^${key}=//p" "$meta" | head -n 1
@@ -493,7 +511,9 @@ assert_contains 'help documents the quota failure exit' "$help_output" \
   'quota exits 1 when the lookup failed'
 assert_contains 'help documents the quota stdin header' "$help_output" \
   'HTTP header that curl reads from'
-assert_eq 'version is available' "glm-agent $(sed -n 's/^VERSION="\([^"]*\)"/\1/p' "$SCRIPT")" "$($SCRIPT --version)"
+assert_eq 'version is available' \
+  "glm-agent $(sed -n "s/^PROF_VERSION='\([^']*\)'/\1/p" "$REPO_DIR/core/providers/glm.sh")" \
+  "$($SCRIPT --version)"
 
 secret='zai-test-secret-value'
 capture "$SCRIPT" api-key "$secret"
@@ -1045,7 +1065,7 @@ started_at=$(date +%s)
 EOF2
 ) &
 cancel_race_replacement_pid=$!
-if cancel_race_output="$(gtimeout 10 "$SCRIPT" cancel "$cancel_race_worker_id" \
+if cancel_race_output="$(run_with_timeout 10 "$SCRIPT" cancel "$cancel_race_worker_id" \
   2>"$TEST_ROOT/cancel-race.err")"; then
   cancel_race_rc=0
 else
@@ -1484,7 +1504,7 @@ sed 's/^status=.*/status=RUNNING/; s/^turn=.*/turn=2/' \
 mv "$missing_state_dir/meta.next" "$missing_state_dir/meta"
 mkdir "$missing_state_dir/active"
 missing_state_started_at="$(date +%s)"
-if missing_state_wait_output="$(gtimeout 6 "$SCRIPT" wait --timeout 1 \
+if missing_state_wait_output="$(run_with_timeout 6 "$SCRIPT" wait --timeout 1 \
   "$missing_state_id" 2>&1)"; then
   missing_state_wait_rc=0
 else
@@ -2630,7 +2650,7 @@ fi
 
 # --- quota: README example matches the CLI output ----------------------------
 readme_quota_example="$(sed -n '/^QUOTA_STATUS=OK$/,/^PROVIDER_CODE=$/p' \
-  "$REPO_DIR/README.md" | sed '/^RESPONSE=/d')"
+  "$REPO_DIR/glm/README.md" | sed '/^RESPONSE=/d')"
 actual_quota_example="$(printf '%s\n' "$expected_quota_ok" |
   sed '/^RESPONSE=/d')"
 assert_eq 'README quota example matches the CLI output' \
@@ -3530,16 +3550,16 @@ auth_cli auth add personal --name me --api-key "$AUTH_KEY_ME"
 auth_cli auth add team --name acme --api-key "$AUTH_KEY_ACME" \
   --organization '<organization>' --project '<project>'
 assert_eq 'README auth add example matches the CLI output' "$OUTPUT" \
-  "$(sed -n '/^ACCOUNT=ADDED$/,/^ACTIVE=false$/p' "$REPO_DIR/README.md")"
+  "$(sed -n '/^ACCOUNT=ADDED$/,/^ACTIVE=false$/p' "$REPO_DIR/glm/README.md")"
 auth_cli auth switch acme
 assert_eq 'README auth switch example matches the CLI output' "$OUTPUT" \
-  "$(sed -n '/^ACCOUNT=ACTIVE$/,/^TYPE=team$/p' "$REPO_DIR/README.md")"
+  "$(sed -n '/^ACCOUNT=ACTIVE$/,/^TYPE=team$/p' "$REPO_DIR/glm/README.md")"
 auth_cli auth list
 assert_eq 'README auth list example matches the CLI output' "$OUTPUT" \
-  "$(sed -n '/^ACTIVE_ACCOUNT=/,/^ACCOUNT_2_ACTIVE=/p' "$REPO_DIR/README.md")"
+  "$(sed -n '/^ACTIVE_ACCOUNT=/,/^ACCOUNT_2_ACTIVE=/p' "$REPO_DIR/glm/README.md")"
 auth_cli auth remove me
 assert_eq 'README auth remove example matches the CLI output' "$OUTPUT" \
-  "$(sed -n '/^ACCOUNT=REMOVED$/,/^NAME=me$/p' "$REPO_DIR/README.md")"
+  "$(sed -n '/^ACCOUNT=REMOVED$/,/^NAME=me$/p' "$REPO_DIR/glm/README.md")"
 
 # --- auth: no key reaches stdout or stderr -----------------------------------
 for auth_secret in "$AUTH_KEY_LEGACY" "$AUTH_KEY_ME" "$AUTH_KEY_ACME" \

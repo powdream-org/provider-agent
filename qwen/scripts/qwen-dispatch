@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+dd_resolve_path() {
+  local path="$1" dir target
+  while [[ -L "$path" ]]; do
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$dir/$target" ;;
+    esac
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+DD_SELF="$(dd_resolve_path "${BASH_SOURCE[0]}")"
+DD_SCRIPT_DIR="$(dirname "$DD_SELF")"
+DD_ROOT_DIR="$(cd "$DD_SCRIPT_DIR/.." && pwd -P)"
+DD_NAME="${0##*/}"
+DD_PREFIX='QWEN'
+
+# shellcheck source=../../core/providers/qwen.sh
+. "$DD_ROOT_DIR/../core/providers/qwen.sh"
+
+PROVIDER_AGENT_HOME="${!PROF_ENV_AGENT_HOME:-$HOME/$PROF_HOME_DIR}"
+DD_CLI="${!PROF_ENV_DISPATCH_CLI:-$DD_ROOT_DIR/${PROF_ID}-agent}"
+
+DD_EVT_WARN="${DD_PREFIX}_WARN"
+DD_EVT_PENDING="${DD_PREFIX}_PENDING"
+DD_EVT_ACK="${DD_PREFIX}_ACK"
+DD_EVT_ACK_REFUSED="${DD_PREFIX}_ACK_REFUSED"
+DD_EVT_CLOSE_REFUSED="${DD_PREFIX}_CLOSE_REFUSED"
+DD_EVT_BLOCKED="${DD_PREFIX}_BLOCKED"
+DD_EVT_NOT_REACHED="${DD_PREFIX}_NOT_REACHED"
+DD_EVT_RECEIPT="${DD_PREFIX}_RECEIPT"
+DD_EVT_STILL_RUNNING="${DD_PREFIX}_STILL_RUNNING"
+DD_EVT_STALLED="${DD_PREFIX}_STALLED"
+DD_EVT_VERDICT="${DD_PREFIX}_VERDICT"
+
+DD_CORE_DIR="$(cd "$DD_ROOT_DIR/../core/dispatch" && pwd -P)"
+# shellcheck source=../../core/dispatch/dispatch-common.sh
+source "$DD_CORE_DIR/dispatch-common.sh"
+# shellcheck source=../../core/dispatch/dispatch-quota.sh
+source "$DD_CORE_DIR/dispatch-quota.sh"
+# shellcheck source=../../core/dispatch/dispatch-registry.sh
+source "$DD_CORE_DIR/dispatch-registry.sh"
+# shellcheck source=../../core/dispatch/dispatch-git.sh
+source "$DD_CORE_DIR/dispatch-git.sh"
+# shellcheck source=../../core/dispatch/dispatch-wait.sh
+source "$DD_CORE_DIR/dispatch-wait.sh"
+# shellcheck source=../../core/dispatch/dispatch-run.sh
+source "$DD_CORE_DIR/dispatch-run.sh"
+# shellcheck source=../../core/dispatch/dispatch-cmds.sh
+source "$DD_CORE_DIR/dispatch-cmds.sh"
+
+dd_main "$@"

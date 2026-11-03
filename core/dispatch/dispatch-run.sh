@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 dd_emit_not_reached() {
-  printf 'GLM_NOT_REACHED reason=%s\n' "$1"
+  printf '%s reason=%s\n' "$DD_EVT_NOT_REACHED"  "$1"
   return 11
 }
 
 dd_emit_receipt() {
-  printf 'GLM_RECEIPT label=%s worker=%s turn=%s role=%s model=%s cwd=%s scope=%s quota_5h_used=%s quota_1w_used=%s\n' \
+  printf '%s label=%s worker=%s turn=%s role=%s model=%s cwd=%s scope=%s quota_5h_used=%s quota_1w_used=%s\n' "$DD_EVT_RECEIPT"  \
     "$1" "$2" "$3" "$4" "$5" "$(dd_encode_token "$6")" \
     "$DD_QUOTA_SCOPE" "$DD_QUOTA_5H_USED" "$DD_QUOTA_1W_USED"
 }

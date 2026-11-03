@@ -42,7 +42,7 @@ dd_pick_reset() {
 }
 
 dd_emit_blocked() {
-  printf 'GLM_BLOCKED row=%s reset_at=%s scope=%s\n' "$1" "$2" "$DD_QUOTA_SCOPE"
+  printf '%s row=%s reset_at=%s scope=%s\n' "$DD_EVT_BLOCKED"  "$1" "$2" "$DD_QUOTA_SCOPE"
   return 10
 }
 
@@ -63,6 +63,9 @@ dd_gate_quota() {
   local status scope error_kind i type window remaining percent reset
   local exhausted="" short="" graded="" threshold=""
   export DD_QUOTA_SCOPE="unknown" DD_QUOTA_5H_USED="unknown" DD_QUOTA_1W_USED="unknown"
+  if [[ "${PROF_QUOTA_BACKEND:-none}" == none ]]; then
+    return 0
+  fi
   dd_fetch_quota
   if [[ "$DD_Q_RC" != 0 && "$DD_Q_RC" != 1 ]] || ! dd_kv_has "$DD_Q_TEXT" QUOTA_STATUS; then
     dd_emit_blocked 1 session || return $?
@@ -128,6 +131,10 @@ dd_gate_quota() {
 dd_read_quota_1w_used() {
   export DD_QUOTA_SCOPE="unknown" DD_QUOTA_5H_USED="unknown" DD_QUOTA_1W_USED="unknown"
   local i=1
+  if [[ "${PROF_QUOTA_BACKEND:-none}" == none ]]; then
+    printf '%s\n' "$DD_QUOTA_1W_USED"
+    return 0
+  fi
   dd_fetch_quota
   if [[ "$(dd_kv_get "$DD_Q_TEXT" QUOTA_STATUS)" == OK ]]; then
     while dd_kv_has "$DD_Q_TEXT" "LIMIT_${i}_TYPE"; do

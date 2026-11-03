@@ -1,6 +1,6 @@
 {
-  "name": "glm-agent",
-  "description": "Claude Code plugins from powdream-org/glm-agent",
+  "name": "provider-agent",
+  "description": "Claude Code plugins from powdream-org/provider-agent",
   "owner": {
     "name": "powdream-org"
   },
@@ -9,7 +9,16 @@
       "name": "glm-agent",
       "description": "Persistent Z.ai GLM workers for Claude Code orchestration",
       "version": "1.2.1",
-      "source": "./",
+      "source": "./glm",
+      "author": {
+        "name": "Heejoon Kang"
+      }
+    },
+    {
+      "name": "qwen-agent",
+      "description": "Persistent Alibaba Cloud Qwen workers for Claude Code orchestration",
+      "version": "0.1.0",
+      "source": "./qwen",
       "author": {
         "name": "Heejoon Kang"
       }

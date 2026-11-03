@@ -1,0 +1,18 @@
+{
+  "name": "qwen-agent",
+  "version": "0.1.0",
+  "description": "Persistent Alibaba Cloud Qwen workers for Claude Code orchestration",
+  "author": {
+    "name": "Heejoon Kang"
+  },
+  "homepage": "https://github.com/powdream-org/provider-agent",
+  "repository": "https://github.com/powdream-org/provider-agent",
+  "license": "MIT",
+  "keywords": [
+    "qwen",
+    "alibaba-cloud",
+    "modelstudio",
+    "subagents",
+    "orchestration"
+  ]
+}

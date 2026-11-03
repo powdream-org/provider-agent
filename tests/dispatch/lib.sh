@@ -3,8 +3,8 @@ set -Eeuo pipefail
 
 DT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_DIR="$(cd "$DT_DIR/../.." && pwd -P)"
-DISPATCH="$REPO_DIR/scripts/glm-dispatch"
-REAL_CLI="$REPO_DIR/glm-agent"
+DISPATCH="$REPO_DIR/glm/scripts/glm-dispatch"
+REAL_CLI="$REPO_DIR/glm/glm-agent"
 TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_BASE="${TEMP_BASE%/}"
 TEST_ROOT="$(mktemp -d "$TEMP_BASE/glm-dispatch-test.XXXXXX")"

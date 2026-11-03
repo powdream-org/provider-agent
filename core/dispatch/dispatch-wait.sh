@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 
 dd_emit_still_running() {
-  printf 'GLM_STILL_RUNNING label=%s worker=%s waited_seconds=%s\n' "$1" "$2" "$3"
+  printf '%s label=%s worker=%s waited_seconds=%s\n' "$DD_EVT_STILL_RUNNING"  "$1" "$2" "$3"
   return 13
 }
 
 dd_emit_stalled() {
-  printf 'GLM_STALLED label=%s worker=%s idle_seconds=%s\n' "$1" "$2" "$3"
+  printf '%s label=%s worker=%s idle_seconds=%s\n' "$DD_EVT_STALLED"  "$1" "$2" "$3"
   return 12
 }
 
@@ -197,7 +197,7 @@ dd_emit_verdict() {
   fi
   delta="$(dd_format_delta "$(dd_registry_get "$DD_SESSION" "$label" quota_1w_used)" "$(dd_read_quota_1w_used)")"
   dd_git_report "$label"
-  printf 'GLM_VERDICT label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s%s\n' \
+  printf '%s label=%s worker=%s status=%s class=%s result=%s files_changed=%s quota_1w_delta=%s fallback=%s%s\n' "$DD_EVT_VERDICT"  \
     "$label" "$worker" "$status" "$class" "$(dd_encode_token "${result:--}")" "$DD_FILES_CHANGED" "$delta" "$fallback" "${next:+ next=$next}"
   dd_emit_response_section "$status" "$result" "$worker" "$turn"
   dd_emit_result_sections "$result"

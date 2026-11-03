@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-DD_USAGE='usage: glm-dispatch <subcommand> --session <id> [options]
+DD_USAGE="usage: ${DD_NAME} <subcommand> --session <id> [options]
 subcommands: run send attach pending ack status result cancel close
 common options: --session <id> (required), --label <name> (all but pending)
 run: --role explorer|general-purpose --model haiku|sonnet|opus --cwd <dir>
@@ -9,19 +9,19 @@ send: --task-file <path> [--wait] [--max-wait <s>] [--stall-timeout <s>]
       [--poll-seconds <s>] [--allow-path <glob>]...
 attach: [--max-wait <s>] [--stall-timeout <s>] [--poll-seconds <s>]
 pending: --session <id> only
-ack, status, result, cancel, close: --session <id> --label <name>'
+ack, status, result, cancel, close: --session <id> --label <name>"
 
 dd_print_usage() {
   printf '%s\n' "$DD_USAGE" >&2
 }
 
 dd_fail() {
-  printf 'glm-dispatch: %s\n' "$1" >&2
+  printf '%s: %s\n' "$DD_NAME" "$1" >&2
   exit 2
 }
 
 dd_state_home() {
-  printf '%s\n' "${GLM_AGENT_HOME:-$HOME/.glm}"
+  printf '%s\n' "${PROVIDER_AGENT_HOME:?provider state home not set}"
 }
 
 dd_now_utc() {

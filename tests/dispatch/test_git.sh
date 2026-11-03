@@ -110,8 +110,9 @@ assert_eq 'a non-git cwd still exits 0 for a DONE worker' 0 "$RC"
 GIT_PROBE="$TEST_ROOT/git-probe.sh"
 cat >"$GIT_PROBE" <<'PROBE'
 set -Eeuo pipefail
-source "$1/scripts/lib/dispatch-common.sh"
-source "$1/scripts/lib/dispatch-git.sh"
+DD_NAME='glm-dispatch'
+source "$1/core/dispatch/dispatch-common.sh"
+source "$1/core/dispatch/dispatch-git.sh"
 for pair in 'src/a/b.txt|src/*' 'docs/x|src/*' 'a.txt|*.txt' 'a.txt|a.t?t' 'src/a.txt|src/[ab].txt' 'src/c.txt|src/[ab].txt'; do
   if dd_glob_matches "${pair%%|*}" "${pair#*|}"; then
     printf 'match %s\n' "$pair"

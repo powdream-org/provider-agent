@@ -69,11 +69,11 @@ dd_cmd_pending() {
         state=running
         ;;
     esac
-    printf 'GLM_PENDING label=%s worker=%s state=%s status=%s\n' "$label" "$worker" "$state" "$status"
+    printf '%s label=%s worker=%s state=%s status=%s\n' "$DD_EVT_PENDING"  "$label" "$worker" "$state" "$status"
     shown=true
   done
   if [[ "$shown" != true ]]; then
-    printf 'GLM_PENDING none\n'
+    printf '%s none\n' "$DD_EVT_PENDING" 
   fi
 }
 
@@ -84,14 +84,14 @@ dd_cmd_ack() {
   case "$status" in
     DONE|BLOCKED|NO_REPORT|INVALID)
       dd_registry_put "$DD_SESSION" "$DD_LABEL" acked true
-      printf 'GLM_ACK label=%s\n' "$DD_LABEL"
+      printf '%s label=%s\n' "$DD_EVT_ACK"  "$DD_LABEL"
       ;;
     RUNNING)
-      printf 'GLM_ACK_REFUSED label=%s reason=running\n' "$DD_LABEL"
+      printf '%s label=%s reason=running\n' "$DD_EVT_ACK_REFUSED"  "$DD_LABEL"
       exit 1
       ;;
     *)
-      printf 'GLM_ACK_REFUSED label=%s reason=not-terminal\n' "$DD_LABEL"
+      printf '%s label=%s reason=not-terminal\n' "$DD_EVT_ACK_REFUSED"  "$DD_LABEL"
       exit 1
       ;;
   esac
@@ -120,7 +120,7 @@ dd_cmd_cancel() {
 dd_cmd_close() {
   dd_require_label
   if [[ "$(dd_worker_status "$DD_WORKER")" == RUNNING ]]; then
-    printf 'GLM_CLOSE_REFUSED label=%s reason=running\n' "$DD_LABEL"
+    printf '%s label=%s reason=running\n' "$DD_EVT_CLOSE_REFUSED"  "$DD_LABEL"
     exit 1
   fi
   dd_cli close "$DD_WORKER"

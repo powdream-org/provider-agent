@@ -2,91 +2,218 @@
 set -Eeuo pipefail
 
 PROGRAM="${0##*/}"
-VERSION="1.2.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_PATH="$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
-SYSTEM_PROMPT_FILE="${GLM_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
-ROLE_PROMPTS_DIR="${GLM_ROLE_PROMPTS_DIR:-$SCRIPT_DIR/prompts}"
-DEFAULT_ROLE="${GLM_ROLE:-general-purpose}"
+# Detached turns re-invoke the provider entry, not this library: the entry
+# sources the profile before the core, so a bare core execution would abort.
+RUNNER_ENTRY="${PROF_ENTRY_PATH:-$SCRIPT_PATH}"
 
-GLM_AGENT_HOME="${GLM_AGENT_HOME:-$HOME/.glm}"
-if [[ "$GLM_AGENT_HOME" != /* ]]; then
-  GLM_AGENT_HOME="$PWD/$GLM_AGENT_HOME"
+# The entry script sources a provider profile before this file. The profile
+# defines every PROF_ variable below; this file never hardcodes a provider.
+# Required scalar profile variables:
+#   PROF_ID                   provider id, e.g. glm or qwen
+#   PROF_LABEL                short display label, e.g. GLM or Qwen
+#   PROF_PROVIDER_NAME        full provider name used in help text
+#   PROF_VERSION              CLI/plugin version
+#   PROF_HOME_DIR             state directory name under $HOME, e.g. .glm
+#   PROF_DEFAULT_BASE_URL     default ANTHROPIC_BASE_URL value
+#   PROF_DEFAULT_HAIKU_MODEL / PROF_DEFAULT_SONNET_MODEL /
+#   PROF_DEFAULT_OPUS_MODEL   default logical model mappings
+#   PROF_ENV_*                the user-facing environment variable names the
+#                             engine reads via indirect expansion: AGENT_HOME,
+#                             API_KEY, BASE_URL, HAIKU_MODEL, SONNET_MODEL,
+#                             OPUS_MODEL, SYSTEM_PROMPT_FILE,
+#                             ROLE_PROMPTS_DIR, ROLE, RESULT_FILE,
+#                             RETENTION_DAYS
+# Optional profile variables (with defaults shown):
+#   PROF_QUOTA_BACKEND        monitor | none (default none)
+#   PROF_SUPPORTS_TEAM_SCOPE  true | false (default false)
+#   PROF_CLAUDE_ENV_EXTRA     extra NAME=VALUE entries passed to every
+#                             Claude invocation, in order
+
+for _prof_var in \
+  PROF_ID PROF_LABEL PROF_PROVIDER_NAME PROF_VERSION PROF_HOME_DIR \
+  PROF_DEFAULT_BASE_URL PROF_DEFAULT_HAIKU_MODEL PROF_DEFAULT_SONNET_MODEL \
+  PROF_DEFAULT_OPUS_MODEL PROF_ENV_AGENT_HOME PROF_ENV_API_KEY \
+  PROF_ENV_BASE_URL PROF_ENV_HAIKU_MODEL PROF_ENV_SONNET_MODEL \
+  PROF_ENV_OPUS_MODEL PROF_ENV_SYSTEM_PROMPT_FILE PROF_ENV_ROLE_PROMPTS_DIR \
+  PROF_ENV_ROLE PROF_ENV_RESULT_FILE PROF_ENV_RETENTION_DAYS; do
+  if [[ -z "${!_prof_var:-}" ]]; then
+    printf '%s: missing provider profile variable: %s\n' "${0##*/}" "$_prof_var" >&2
+    exit 2
+  fi
+done
+unset _prof_var
+
+PROF_QUOTA_BACKEND="${PROF_QUOTA_BACKEND:-none}"
+PROF_SUPPORTS_TEAM_SCOPE="${PROF_SUPPORTS_TEAM_SCOPE:-false}"
+PROF_ENV_QUOTA_ORGANIZATION="${PROF_ENV_QUOTA_ORGANIZATION:-}"
+PROF_ENV_QUOTA_PROJECT="${PROF_ENV_QUOTA_PROJECT:-}"
+
+VERSION="$PROF_VERSION"
+SYSTEM_PROMPT_FILE="${!PROF_ENV_SYSTEM_PROMPT_FILE:-$SCRIPT_DIR/system-prompt.md}"
+ROLE_PROMPTS_DIR="${!PROF_ENV_ROLE_PROMPTS_DIR:-$SCRIPT_DIR/prompts}"
+DEFAULT_ROLE="${!PROF_ENV_ROLE:-general-purpose}"
+
+PROVIDER_AGENT_HOME="${!PROF_ENV_AGENT_HOME:-$HOME/$PROF_HOME_DIR}"
+if [[ "$PROVIDER_AGENT_HOME" != /* ]]; then
+  PROVIDER_AGENT_HOME="$PWD/$PROVIDER_AGENT_HOME"
 fi
 
-AUTH_FILE="$GLM_AGENT_HOME/.env.auth"
-TEAM_SCOPE_FILE="$GLM_AGENT_HOME/.env.team-scope"
-ACCOUNTS_DIR="$GLM_AGENT_HOME/accounts"
+AUTH_FILE="$PROVIDER_AGENT_HOME/.env.auth"
+TEAM_SCOPE_FILE="$PROVIDER_AGENT_HOME/.env.team-scope"
+ACCOUNTS_DIR="$PROVIDER_AGENT_HOME/accounts"
 ACCOUNT_NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._@-]*$'
-WORKERS_DIR="$GLM_AGENT_HOME/workers"
-CLEANUP_STAMP_FILE="$GLM_AGENT_HOME/.cleanup-stamp"
-CLEANUP_LOG_FILE="$GLM_AGENT_HOME/cleanup.log"
+WORKERS_DIR="$PROVIDER_AGENT_HOME/workers"
+CLEANUP_STAMP_FILE="$PROVIDER_AGENT_HOME/.cleanup-stamp"
+CLEANUP_LOG_FILE="$PROVIDER_AGENT_HOME/cleanup.log"
 
-ZAI_BASE_URL="${ZAI_BASE_URL:-https://api.z.ai/api/anthropic}"
-ZAI_HAIKU_MODEL="${ZAI_HAIKU_MODEL:-glm-5.3-flash[1m]}"
-ZAI_SONNET_MODEL="${ZAI_SONNET_MODEL:-glm-5.3-flash[1m]}"
-ZAI_OPUS_MODEL="${ZAI_OPUS_MODEL:-glm-5.3[1m]}"
+PROVIDER_BASE_URL="${!PROF_ENV_BASE_URL:-$PROF_DEFAULT_BASE_URL}"
+PROVIDER_HAIKU_MODEL="${!PROF_ENV_HAIKU_MODEL:-$PROF_DEFAULT_HAIKU_MODEL}"
+PROVIDER_SONNET_MODEL="${!PROF_ENV_SONNET_MODEL:-$PROF_DEFAULT_SONNET_MODEL}"
+PROVIDER_OPUS_MODEL="${!PROF_ENV_OPUS_MODEL:-$PROF_DEFAULT_OPUS_MODEL}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-sonnet}"
 
 usage() {
-  cat <<'EOF'
-glm-agent - persistent GLM coding worker for agent orchestration
+  local usage_team_scope_cmds="" usage_team_auth_usage="" usage_team_auth_line=""
+  local usage_migration_team_note=""
+  local usage_security_files=" file
+  inside an account is mode 0600. ~/.${PROF_HOME_DIR}/.env.auth is a relative symlink to
+  the active account."
+  local usage_team_scope_doc="" usage_team_account_fields="" usage_team_switch_note=""
+  local usage_quota_usage="" usage_quota_doc="" usage_quota_env=""
+  local usage_quota_security="" usage_quota_exit=""
 
-USAGE
-  glm-agent api-key [key]
-  glm-agent team-scope [<organization> <project> | --clear]
-  glm-agent auth add personal --name <name> --api-key <key>
-  glm-agent auth add team --name <name> --api-key <key> --organization <org> --project <project>
-  glm-agent auth switch <name>
-  glm-agent auth remove <name>
-  glm-agent auth list
-  glm-agent run <prompt>
-  glm-agent start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
-  glm-agent start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
-  glm-agent send <worker-id> <message>
-  glm-agent send --async <worker-id> <message>
-  glm-agent wait [--timeout <seconds>] <worker-id>
-  glm-agent cancel <worker-id>
-  glm-agent tui [--model <alias>] [--cwd <directory>] [--resume <session-id>]
-  glm-agent result <worker-id>
-  glm-agent status <worker-id>
-  glm-agent list
-  glm-agent close <worker-id>
-  glm-agent quota
-  glm-agent --help
-  glm-agent --version
-
-DESCRIPTION
-  glm-agent runs GLM through Claude Code using Z.ai's Anthropic-compatible
-  endpoint. A worker is durable across invocations: start creates a Claude
-  session and send resumes that same session in its original directory with
-  its original role and model. tui opens a plain interactive Claude Code
-  session with no worker framing. --async returns worker identity before
-  provider completion.
-
-  stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
-  and stderr are stored under ~/.glm/workers/<worker-id>/.
-
-COMMANDS
-  api-key [key]
-      Save the Z.ai API key. With no argument, read it from an interactive
-      hidden prompt so it does not enter shell history. While an account is
-      active, this replaces the key of that account. The stored file is the
-      only key source; the ZAI_API_KEY environment variable is never read.
-
-  team-scope [<organization> <project> | --clear]
+  if [[ "$PROF_SUPPORTS_TEAM_SCOPE" == true ]]; then
+    usage_team_scope_cmds="  ${PROGRAM} team-scope [<organization> <project> | --clear]
+"
+    usage_team_auth_usage="  ${PROGRAM} auth add team --name <name> --api-key <key> --organization <org> --project <project>
+"
+    usage_team_auth_line="  auth add team --name <name> --api-key <key> --organization <org> --project <project>
+"
+    usage_team_scope_doc="  team-scope [<organization> <project> | --clear]
       Show, save, or clear the team-plan quota scope. quota queries the
       personal coding plan by default; a saved organization and project
       switch it to the team plan (type=2 with Bigmodel selector headers).
-      The ZAI_QUOTA_ORGANIZATION and ZAI_QUOTA_PROJECT environment
-      variables override the stored values one by one. Configuring exactly
-      one selector is a configuration error; quota needs both or neither.
-      While an account is active, saving and clearing exit 2 because the
-      scope belongs to the account. Use auth add team instead.
+      The ${PROF_ENV_QUOTA_ORGANIZATION} and ${PROF_ENV_QUOTA_PROJECT}
+      environment variables override the stored values one by one.
+      Configuring exactly one selector is a configuration error; quota
+      needs both or neither. While an account is active, saving and
+      clearing exit 2 because the scope belongs to the account. Use
+      auth add team instead.
 
-  auth add personal --name <name> --api-key <key>
-  auth add team --name <name> --api-key <key> --organization <org> --project <project>
-      Save a named account in ~/.glm/accounts/<name>/. Every option is
+"
+    usage_team_account_fields="        ORGANIZATION=<organization-or-empty>
+        PROJECT=<project-or-empty>
+"
+    usage_migration_team_note=" The account is named team when
+      ~/.${PROF_HOME_DIR}/.env.team-scope is also a regular file, and personal
+      otherwise"
+    usage_security_files=" and team-scope
+  files inside an account are mode 0600. ~/.${PROF_HOME_DIR}/.env.auth and
+  ~/.${PROF_HOME_DIR}/.env.team-scope are relative symlinks to the active
+  account."
+    usage_team_switch_note=" A team
+      account also links ~/.${PROF_HOME_DIR}/.env.team-scope to its scope; a
+      personal account removes that link. The two links change in two steps,
+      not one atomic step."
+    usage_quota_env="  ${PROF_ENV_QUOTA_ORGANIZATION}, ${PROF_ENV_QUOTA_PROJECT}
+      Team-plan quota selectors for quota, overriding the stored
+      team-scope values one by one. Both or neither must be set.
+
+"
+  fi
+
+  if [[ "$PROF_QUOTA_BACKEND" != none ]]; then
+    usage_quota_usage="  ${PROGRAM} quota
+"
+    usage_quota_doc="    quota
+        Query ${PROF_PROVIDER_NAME}'s monitor API once and print the credit quota per window.
+        This creates no worker and starts no Claude session. It uses the key
+        and the scope of the active account. Values are printed as the
+        server reports them; the ${PROF_ID}-agent:quota skill turns them into a
+        dispatch decision. The last raw response and curl stderr are kept in
+        ~/.${PROF_HOME_DIR}/quota/response.json and ~/.${PROF_HOME_DIR}/quota/stderr.log.
+        Requires curl 7.55 or newer and jq.
+
+        Output:
+          QUOTA_STATUS=OK|INVALID
+          SCOPE=personal|team
+          PLAN_LEVEL=<plan-or-empty>
+          LIMIT_COUNT=<n>
+          LIMIT_<i>_TYPE=<server-type>
+          LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>|<empty>
+          LIMIT_<i>_TOTAL=<credits-or-empty>
+          LIMIT_<i>_USED=<credits-or-empty>
+          LIMIT_<i>_REMAINING=<credits-or-empty>
+          LIMIT_<i>_USED_PERCENT=<percent-or-empty>
+          LIMIT_<i>_RESET_AT=<UTC-timestamp-or-empty>
+          RESPONSE=<absolute-path>
+          ERROR_KIND=<classification-or-empty>
+          PROVIDER_CODE=<${PROF_PROVIDER_NAME}-code-or-empty>
+
+        The LIMIT_<i>_ lines appear once per limit, only when
+        QUOTA_STATUS=OK. A failed lookup prints only QUOTA_STATUS=INVALID,
+        SCOPE, RESPONSE, ERROR_KIND, and PROVIDER_CODE. ERROR_KIND is one of
+        authentication, quota-exhausted, provider-transient,
+        model-unavailable, provider-error, or invalid-response.
+
+"
+    usage_quota_security="  quota sends the API key to ${PROF_PROVIDER_NAME} only as an HTTP header that curl reads from
+  stdin, so the key never appears in a process argument list. Configured
+  team-scope selectors travel in the same stdin header block.
+  ~/.${PROF_HOME_DIR}/quota/ holds the raw response body and curl stderr, never the key.
+
+"
+    usage_quota_exit=" quota exits 0 for QUOTA_STATUS=OK, even when a window is exhausted.
+     quota exits 1 when the lookup failed (QUOTA_STATUS=INVALID)."
+  fi
+
+  cat <<EOF
+${PROGRAM} - persistent ${PROF_LABEL} coding worker for agent orchestration
+
+USAGE
+  ${PROGRAM} api-key [key]
+${usage_team_scope_cmds}  ${PROGRAM} auth add personal --name <name> --api-key <key>
+${usage_team_auth_usage}  ${PROGRAM} auth switch <name>
+  ${PROGRAM} auth remove <name>
+  ${PROGRAM} auth list
+  ${PROGRAM} run <prompt>
+  ${PROGRAM} start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
+  ${PROGRAM} start --async [--role <role>] [--model <alias>] [--cwd <directory>] <task>
+  ${PROGRAM} send <worker-id> <message>
+  ${PROGRAM} send --async <worker-id> <message>
+  ${PROGRAM} wait [--timeout <seconds>] <worker-id>
+  ${PROGRAM} cancel <worker-id>
+  ${PROGRAM} tui [--model <alias>] [--cwd <directory>] [--resume <session-id>]
+  ${PROGRAM} result <worker-id>
+  ${PROGRAM} status <worker-id>
+  ${PROGRAM} list
+  ${PROGRAM} close <worker-id>
+${usage_quota_usage}  ${PROGRAM} --help
+  ${PROGRAM} --version
+
+DESCRIPTION
+  ${PROGRAM} runs ${PROF_LABEL} through Claude Code using ${PROF_PROVIDER_NAME}'s
+  Anthropic-compatible endpoint. A worker is durable across invocations:
+  start creates a Claude session and send resumes that same session in its
+  original directory with its original role and model. tui opens a plain
+  interactive Claude Code session with no worker framing. --async returns
+  worker identity before provider completion.
+
+  stdout is compact and machine-readable. Detailed reports, raw Claude JSON,
+  and stderr are stored under ~/.${PROF_HOME_DIR}/workers/<worker-id>/.
+
+COMMANDS
+  api-key [key]
+      Save the ${PROF_PROVIDER_NAME} API key. With no argument, read it from an
+      interactive hidden prompt so it does not enter shell history. While an
+      account is active, this replaces the key of that account. The stored
+      file is the only key source; the ${PROF_ENV_API_KEY} environment variable
+      is never read.
+
+${usage_team_scope_doc}  auth add personal --name <name> --api-key <key>
+${usage_team_auth_line}      Save a named account in ~/.${PROF_HOME_DIR}/accounts/<name>/. Every option is
       required and may appear once, in any order. A name matches
       [A-Za-z0-9][A-Za-z0-9._@-]*. --api-key - reads the key from one line of
       stdin, so the key stays out of the process list. An existing name is an
@@ -96,15 +223,10 @@ COMMANDS
         ACCOUNT=ADDED
         NAME=<name>
         TYPE=personal|team
-        ORGANIZATION=<organization-or-empty>
-        PROJECT=<project-or-empty>
-        ACTIVE=false
+${usage_team_account_fields}        ACTIVE=false
 
   auth switch <name>
-      Make an account active. ~/.glm/.env.auth then links to its key. A team
-      account also links ~/.glm/.env.team-scope to its scope; a personal
-      account removes that link. The two links change in two steps,
-      not one atomic step.
+      Make an account active. ~/.${PROF_HOME_DIR}/.env.auth then links to its key.${usage_team_switch_note}
 
       Output:
         ACCOUNT=ACTIVE
@@ -131,17 +253,17 @@ COMMANDS
         ACCOUNT_<i>_PROJECT=<project-or-empty>
         ACCOUNT_<i>_ACTIVE=true|false
 
-      Every auth subcommand first adopts a legacy ~/.glm/.env.auth regular
-      file as an account. The account is named team when ~/.glm/.env.team-scope
-      is also a regular file, and personal otherwise. The first output line
-      is then MIGRATED_ACCOUNT=<name>. The adoption refuses to run (exit 2,
-      nothing moved) when that account name exists, when the scope file has no
-      key file, or when .env.auth is a dangling symlink or a symlink that
-      does not point to accounts/<name>/api-key. Other commands never migrate.
+      Every auth subcommand first adopts a legacy ~/.${PROF_HOME_DIR}/.env.auth
+      regular file as an account${usage_migration_team_note}. The first output
+      line is then MIGRATED_ACCOUNT=<name>. The
+      adoption refuses to run (exit 2, nothing moved) when that account name
+      exists, when the scope file has no key file, or when .env.auth is a
+      dangling symlink or a symlink that does not point to
+      accounts/<name>/api-key. Other commands never migrate.
 
   run <prompt>
-      Run a one-shot diagnostic GLM Claude Code session. This does not create
-      a persistent worker and prints Claude's normal response.
+      Run a one-shot diagnostic ${PROF_LABEL} Claude Code session. This does not
+      create a persistent worker and prints Claude's normal response.
 
   start [--role <role>] [--model <alias>] [--cwd <directory>] <task>
       Create a worker and execute its first turn. Roles are explorer and
@@ -156,7 +278,7 @@ COMMANDS
         STATUS=DONE|BLOCKED|NO_REPORT|INVALID
         RESULT=<absolute-path>
         ERROR_KIND=<classification-or-empty>
-        PROVIDER_CODE=<Z.ai-code-or-empty>
+        PROVIDER_CODE=<${PROF_PROVIDER_NAME}-code-or-empty>
         FALLBACK_RECOMMENDED=true|false
 
       With STATUS=NO_REPORT, the output also carries REASON, REPLY, and NEXT
@@ -189,8 +311,8 @@ COMMANDS
       and retry cancel or wait.
 
   tui [--model <alias>] [--cwd <directory>] [--resume <session-id>]
-      Open a plain interactive Z.ai-backed Claude Code session. This is the
-      User's own main session: no worker is created, no worker contract
+      Open a plain interactive ${PROF_PROVIDER_NAME}-backed Claude Code session. This is
+      the User's own main session: no worker is created, no worker contract
       system prompt or result file is injected, and the session interacts
       with the terminal directly. A new session prints its SESSION_ID so it
       can be reopened later with --resume. Claude Code itself has no
@@ -209,39 +331,8 @@ COMMANDS
       Mark an idle worker closed. This does not delete its history. A closed
       worker remains available to result and status but rejects send.
 
-    quota
-        Query Z.ai's monitor API once and print the credit quota per window.
-        This creates no worker and starts no Claude session. It uses the key
-        and the scope of the active account. Values are
-        printed as the server reports them; the glm-agent:quota skill turns
-        them into a dispatch decision. The last raw response and curl stderr
-        are kept in ~/.glm/quota/response.json and ~/.glm/quota/stderr.log.
-        Requires curl 7.55 or newer and jq.
-
-        Output:
-          QUOTA_STATUS=OK|INVALID
-          SCOPE=personal|team
-          PLAN_LEVEL=<plan-or-empty>
-          LIMIT_COUNT=<n>
-          LIMIT_<i>_TYPE=<server-type>
-          LIMIT_<i>_WINDOW=<n>h|<n>w|u<unit>x<number>|<empty>
-          LIMIT_<i>_TOTAL=<credits-or-empty>
-          LIMIT_<i>_USED=<credits-or-empty>
-          LIMIT_<i>_REMAINING=<credits-or-empty>
-          LIMIT_<i>_USED_PERCENT=<percent-or-empty>
-          LIMIT_<i>_RESET_AT=<UTC-timestamp-or-empty>
-          RESPONSE=<absolute-path>
-          ERROR_KIND=<classification-or-empty>
-          PROVIDER_CODE=<Z.ai-code-or-empty>
-
-        The LIMIT_<i>_ lines appear once per limit, only when
-        QUOTA_STATUS=OK. A failed lookup prints only QUOTA_STATUS=INVALID,
-        SCOPE, RESPONSE, ERROR_KIND, and PROVIDER_CODE. ERROR_KIND is one of
-        authentication, quota-exhausted, provider-transient,
-        model-unavailable, provider-error, or invalid-response.
-
-WORKER FILES
-  ~/.glm/workers/<worker-id>/
+${usage_quota_doc}WORKER FILES
+  ~/.${PROF_HOME_DIR}/workers/<worker-id>/
     meta
     task.md
     turns/NNNN/
@@ -264,62 +355,52 @@ STATUS VALUES
   NEW       A worker exists but no turn has begun.
 
 WORKER CONTRACT
-  Every turn receives an absolute GLM_RESULT_FILE path. The worker must do and
-  verify the requested work, write the full report to that file, read it back,
-  and make its final line exactly STATUS: DONE or STATUS: BLOCKED. Starting a
-  background process alone is not completion. The wrapper classifies a missing
-  or malformed result as NO_REPORT and an invocation failure as INVALID.
+  Every turn receives an absolute ${PROF_ENV_RESULT_FILE} path. The worker must do
+  and verify the requested work, write the full report to that file, read it
+  back, and make its final line exactly STATUS: DONE or STATUS: BLOCKED.
+  Starting a background process alone is not completion. The wrapper
+  classifies a missing or malformed result as NO_REPORT and an invocation
+  failure as INVALID.
 
   RUNNING is a launch receipt, not task completion.
   Stopping a parent Claude turn leaves a detached worker running.
-  Use cancel with its recorded worker ID when the GLM task itself should stop.
+  Use cancel with its recorded worker ID when the ${PROF_LABEL} task itself
+  should stop.
 
 ORCHESTRATOR WORKFLOW
-  1. glm-agent start --async "<task>"
+  1. ${PROGRAM} start --async "<task>"
   2. Record WORKER_ID, then use wait or status until terminal.
   3. Read RESULT, or REPLY when STATUS=NO_REPORT, and inspect the actual changes.
-  4. glm-agent send --async <worker-id> "<review feedback>" when needed.
+  4. ${PROGRAM} send --async <worker-id> "<review feedback>" when needed.
   5. Use cancel to stop active work, or close after all turns are finished.
 
 ENVIRONMENT
-  GLM_SYSTEM_PROMPT_FILE
+  ${PROF_ENV_SYSTEM_PROMPT_FILE}
       System prompt Markdown read at the start of every worker turn.
-      Default: system-prompt.md next to the glm-agent executable.
+      Default: system-prompt.md shipped with the agent core.
 
-  ZAI_QUOTA_ORGANIZATION, ZAI_QUOTA_PROJECT
-      Team-plan quota selectors for quota, overriding the stored
-      team-scope values one by one. Both or neither must be set.
-
-  GLM_ROLE_PROMPTS_DIR
+${usage_quota_env}  ${PROF_ENV_ROLE_PROMPTS_DIR}
       Directory containing explorer.md and general-purpose.md, read directly
-      on every turn. Default: prompts/ next to the executable.
+      on every turn. Default: prompts/ shipped with the agent core.
 
-  GLM_WORKER_RETENTION_DAYS
+  ${PROF_ENV_RETENTION_DAYS}
       Days a finished worker is kept after its last activity. start deletes
       older DONE, BLOCKED, NO_REPORT, and INVALID workers at most once per 24
       hours. Default: 21. 0 turns the cleanup off.
 
 SECURITY
-  ~/.glm and each ~/.glm/accounts/<name>/ are mode 0700. The key and
-  team-scope files inside an account are mode 0600. ~/.glm/.env.auth and
-  ~/.glm/.env.team-scope are relative symlinks to the active account. The API
-  key is never printed by glm-agent. Worker status output omits the Claude
+  ~/.${PROF_HOME_DIR} and each ~/.${PROF_HOME_DIR}/accounts/<name>/ are mode 0700. The key${usage_security_files}
+  API key is never printed by ${PROGRAM}. Worker status output omits the Claude
   session ID.
 
   start and send use Claude Code's --dangerously-skip-permissions mode so a
   headless worker can edit files and run verification without an interactive
   approval prompt. Start workers only in repositories you trust.
 
-  quota sends the API key to Z.ai only as an HTTP header that curl reads from
-  stdin, so the key never appears in a process argument list. Configured
-  team-scope selectors travel in the same stdin header block. ~/.glm/quota/
-  holds the raw response body and curl stderr, never the key.
-
-EXIT STATUS
+${usage_quota_security}EXIT STATUS
   0  Command succeeded; DONE, BLOCKED, and NO_REPORT are successful worker
-     turns. quota exits 0 for QUOTA_STATUS=OK, even when a window is exhausted.
+     turns.${usage_quota_exit}
   1  Claude invocation or worker response failed (STATUS=INVALID).
-     quota exits 1 when the lookup failed (QUOTA_STATUS=INVALID).
   2  Invalid CLI usage, configuration, dependency, or worker state.
 EOF
 }
@@ -360,11 +441,11 @@ role_prompt_file() {
 }
 
 ensure_state_home() {
-  mkdir -p "$GLM_AGENT_HOME"
-  chmod 700 "$GLM_AGENT_HOME"
+  mkdir -p "$PROVIDER_AGENT_HOME"
+  chmod 700 "$PROVIDER_AGENT_HOME"
 }
 
-# The stored file is the only key source; the ZAI_API_KEY environment
+# The stored file is the only key source; the PROVIDER_API_KEY environment
 # variable is deliberately never read.
 load_api_key() {
   [[ -f "$AUTH_FILE" ]] ||
@@ -375,12 +456,22 @@ load_api_key() {
   [[ -n "$API_KEY" ]] || die "stored API key is empty"
 }
 
-# Resolves the quota scope. ZAI_QUOTA_ORGANIZATION and ZAI_QUOTA_PROJECT
-# override the stored selectors one by one; both set means team, neither
-# means personal, and exactly one is a configuration error. Sets
-# ZAI_QUOTA_SCOPE, ZAI_QUOTA_ORGANIZATION, and ZAI_QUOTA_PROJECT.
+# Resolves the quota scope. The profile's quota organization and project
+# environment variables override the stored selectors one by one; both set
+# means team, neither means personal, and exactly one is a configuration
+# error. Sets PROVIDER_QUOTA_SCOPE, PROVIDER_QUOTA_ORGANIZATION, and
+# PROVIDER_QUOTA_PROJECT. A provider without team scope always resolves to
+# personal.
 load_team_scope() {
   local file_org='' file_proj='' scope_raw=''
+  local env_org='' env_proj=''
+
+  if [[ "$PROF_SUPPORTS_TEAM_SCOPE" != true ]]; then
+    PROVIDER_QUOTA_ORGANIZATION=''
+    PROVIDER_QUOTA_PROJECT=''
+    PROVIDER_QUOTA_SCOPE=personal
+    return 0
+  fi
 
   if [[ -f "$TEAM_SCOPE_FILE" ]]; then
     scope_raw="$(cat "$TEAM_SCOPE_FILE")" ||
@@ -395,17 +486,19 @@ load_team_scope() {
     file_proj="${file_proj#project=}"
   fi
 
-  ZAI_QUOTA_ORGANIZATION="${ZAI_QUOTA_ORGANIZATION:-$file_org}"
-  ZAI_QUOTA_PROJECT="${ZAI_QUOTA_PROJECT:-$file_proj}"
+  env_org="${!PROF_ENV_QUOTA_ORGANIZATION:-}"
+  env_proj="${!PROF_ENV_QUOTA_PROJECT:-}"
+  PROVIDER_QUOTA_ORGANIZATION="${env_org:-$file_org}"
+  PROVIDER_QUOTA_PROJECT="${env_proj:-$file_proj}"
 
-  if [[ -n "$ZAI_QUOTA_ORGANIZATION" || -n "$ZAI_QUOTA_PROJECT" ]]; then
-    [[ -n "$ZAI_QUOTA_ORGANIZATION" && -n "$ZAI_QUOTA_PROJECT" ]] ||
+  if [[ -n "$PROVIDER_QUOTA_ORGANIZATION" || -n "$PROVIDER_QUOTA_PROJECT" ]]; then
+    [[ -n "$PROVIDER_QUOTA_ORGANIZATION" && -n "$PROVIDER_QUOTA_PROJECT" ]] ||
       die "team scope needs both an organization and a project. Run: $PROGRAM team-scope <organization> <project>"
-    validate_single_line "team organization" "$ZAI_QUOTA_ORGANIZATION"
-    validate_single_line "team project" "$ZAI_QUOTA_PROJECT"
-    ZAI_QUOTA_SCOPE=team
+    validate_single_line "team organization" "$PROVIDER_QUOTA_ORGANIZATION"
+    validate_single_line "team project" "$PROVIDER_QUOTA_PROJECT"
+    PROVIDER_QUOTA_SCOPE=team
   else
-    ZAI_QUOTA_SCOPE=personal
+    PROVIDER_QUOTA_SCOPE=personal
   fi
 }
 
@@ -423,20 +516,30 @@ require_system_prompt_file() {
     die "system prompt file is empty: $SYSTEM_PROMPT_FILE"
 }
 
-run_glm_claude() {
+run_provider_claude() {
   require_command claude
+
+  local -a extra_env=()
+  local prof_kv
+  for prof_kv in ${PROF_CLAUDE_ENV_EXTRA[@]+"${PROF_CLAUDE_ENV_EXTRA[@]}"}; do
+    extra_env+=("$prof_kv")
+  done
+  if [[ -n "${PROVIDER_RESULT_FILE:-}" ]]; then
+    extra_env+=("${PROF_ENV_RESULT_FILE}=$PROVIDER_RESULT_FILE")
+  fi
 
   env \
     -u CLAUDECODE \
-    -u ZAI_API_KEY \
-    ANTHROPIC_BASE_URL="$ZAI_BASE_URL" \
+    -u "$PROF_ENV_API_KEY" \
+    -u PROVIDER_RESULT_FILE \
+    ANTHROPIC_BASE_URL="$PROVIDER_BASE_URL" \
     ANTHROPIC_AUTH_TOKEN="$API_KEY" \
-    ANTHROPIC_DEFAULT_HAIKU_MODEL="$ZAI_HAIKU_MODEL" \
-    ANTHROPIC_DEFAULT_SONNET_MODEL="$ZAI_SONNET_MODEL" \
-    ANTHROPIC_DEFAULT_OPUS_MODEL="$ZAI_OPUS_MODEL" \
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000 \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL="$PROVIDER_HAIKU_MODEL" \
+    ANTHROPIC_DEFAULT_SONNET_MODEL="$PROVIDER_SONNET_MODEL" \
+    ANTHROPIC_DEFAULT_OPUS_MODEL="$PROVIDER_OPUS_MODEL" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     API_TIMEOUT_MS=3000000 \
+    ${extra_env[@]+"${extra_env[@]}"} \
     claude "$@"
 }
 
@@ -1059,7 +1162,11 @@ print_turn_control() {
   fi
 }
 
-extract_zai_code() {
+# Provider-specific hooks. A profile may define any of these before sourcing
+# this file; the definitions below are the Z.ai-flavoured defaults and are
+# skipped when the profile supplies its own.
+if ! declare -F extract_provider_code >/dev/null 2>&1; then
+extract_provider_code() {
   local response_file="$1"
   local stderr_file="$2"
   local code=""
@@ -1091,7 +1198,9 @@ extract_zai_code() {
   )" || true
   printf '%s\n' "$code"
 }
+fi
 
+if ! declare -F provider_response_is_error >/dev/null 2>&1; then
 provider_response_is_error() {
   local response_file="$1"
 
@@ -1111,6 +1220,9 @@ provider_response_is_error() {
   ' "$response_file" >/dev/null 2>&1
 }
 
+fi
+
+if ! declare -F classify_error_kind >/dev/null 2>&1; then
 classify_error_kind() {
   local provider_code="$1"
   local default_kind="$2"
@@ -1126,6 +1238,7 @@ classify_error_kind() {
     *) printf '%s\n' 'provider-error' ;;
   esac
 }
+fi
 
 invalidate_turn() {
   local dir="$1"
@@ -1222,7 +1335,7 @@ build_turn_system_prompt() {
   system_prompt+="$role_prompt"
   system_prompt+=$'\n</worker_role>'
   system_prompt+=$'\n\n<current_turn_result_file>\n'
-  system_prompt+="For this turn, GLM_RESULT_FILE is exactly this absolute path:"
+  system_prompt+="For this turn, ${PROF_ENV_RESULT_FILE} is exactly this absolute path:"
   system_prompt+=$'\n'
   system_prompt+="$result_file"
   system_prompt+=$'\nWrite the report to that exact path, then read it back as required.\n</current_turn_result_file>'
@@ -1355,7 +1468,7 @@ execute_headless_turn() {
     done
     [[ -f "$provider_go_file" ]] || exit 125
     cd "$cwd"
-    GLM_RESULT_FILE="$result_file" run_glm_claude "${args[@]}" "$prompt"
+    PROVIDER_RESULT_FILE="$result_file" run_provider_claude "${args[@]}" "$prompt"
   ) >"$response_file" 2>"$stderr_file" &
   provider_pid=$!
   for _ in {1..500}; do
@@ -1412,7 +1525,7 @@ execute_headless_turn() {
     return 1
   fi
 
-  provider_code="$(extract_zai_code "$response_file" "$stderr_file")"
+  provider_code="$(extract_provider_code "$response_file" "$stderr_file")"
   if ((exit_code != 0)) || provider_response_is_error "$response_file"; then
     drain_owned_provider_group "$provider_pgid" "$provider_start" || true
     if ((exit_code != 0)); then
@@ -1519,7 +1632,7 @@ launch_async_turn() {
   generation="$(active_get "$dir" generation)"
 
   set -m
-  nohup "$SCRIPT_PATH" _execute-turn "$worker_id" "$turn" \
+  nohup "$RUNNER_ENTRY" _execute-turn "$worker_id" "$turn" \
     </dev/null >"$turn_dir/runner.log" 2>&1 &
   runner_pid=$!
   set +m
@@ -1762,7 +1875,7 @@ cmd_api_key() {
   fi
 
   ensure_state_home
-  tmp="$(mktemp "$GLM_AGENT_HOME/.env.auth.XXXXXX")"
+  tmp="$(mktemp "$PROVIDER_AGENT_HOME/.env.auth.XXXXXX")"
   chmod 600 "$tmp"
   printf '%s' "$key" >"$tmp"
   mv "$tmp" "$AUTH_FILE"
@@ -1779,11 +1892,14 @@ reject_managed_team_scope() {
 }
 
 cmd_team_scope() {
+  if [[ "$PROF_SUPPORTS_TEAM_SCOPE" != true ]]; then
+    die "team scope is not available for this provider"
+  fi
   if (($# == 0)); then
     load_team_scope
-    printf 'TEAM_SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
-    printf 'ORGANIZATION=%s\n' "${ZAI_QUOTA_ORGANIZATION:-}"
-    printf 'PROJECT=%s\n' "${ZAI_QUOTA_PROJECT:-}"
+    printf 'TEAM_SCOPE=%s\n' "$PROVIDER_QUOTA_SCOPE"
+    printf 'ORGANIZATION=%s\n' "${PROVIDER_QUOTA_ORGANIZATION:-}"
+    printf 'PROJECT=%s\n' "${PROVIDER_QUOTA_PROJECT:-}"
     return 0
   fi
 
@@ -1806,8 +1922,8 @@ cmd_team_scope() {
 
   ensure_state_home
   local tmp
-  tmp="$(mktemp "$GLM_AGENT_HOME/.team-scope.XXXXXX")" ||
-    die "cannot create a temporary file in $GLM_AGENT_HOME"
+  tmp="$(mktemp "$PROVIDER_AGENT_HOME/.team-scope.XXXXXX")" ||
+    die "cannot create a temporary file in $PROVIDER_AGENT_HOME"
   chmod 600 "$tmp"
   printf 'organization=%s\nproject=%s\n' "$organization" "$project" >"$tmp"
   mv "$tmp" "$TEAM_SCOPE_FILE"
@@ -1869,7 +1985,7 @@ read_scope_file() {
 swap_link() {
   local target="$1" link="$2" tmp="$2.tmp.$$"
   rm -f -- "$tmp"
-  ln -s -- "$target" "$tmp" || die "cannot create a symlink in $GLM_AGENT_HOME"
+  ln -s -- "$target" "$tmp" || die "cannot create a symlink in $PROVIDER_AGENT_HOME"
   mv -f -- "$tmp" "$link" || {
     rm -f -- "$tmp"
     die "cannot replace $link"
@@ -2034,6 +2150,13 @@ cmd_auth_add() {
     personal|team)
       shift
       ;;
+  esac
+  if [[ "${kind:-}" == "team" && "$PROF_SUPPORTS_TEAM_SCOPE" != true ]]; then
+    die "team accounts are not available for this provider"
+  fi
+  case "$kind" in
+    personal|team)
+      ;;
     "")
       auth_usage_die "auth add requires a kind: personal or team"
       ;;
@@ -2186,8 +2309,9 @@ cmd_run() {
   load_api_key
   local prompt="$*"
   (
-    unset GLM_RESULT_FILE
-    run_glm_claude -p --model "$CLAUDE_MODEL" "$prompt"
+    unset PROVIDER_RESULT_FILE
+    unset "$PROF_ENV_RESULT_FILE"
+    run_provider_claude -p --model "$CLAUDE_MODEL" "$prompt"
   )
 }
 
@@ -2224,7 +2348,7 @@ cleanup_worker() {
 }
 
 cleanup_old_workers() {
-  local days="${GLM_WORKER_RETENTION_DAYS:-21}"
+  local days="${!PROF_ENV_RETENTION_DAYS:-21}"
   local minutes
   local meta_path
 
@@ -2238,7 +2362,7 @@ cleanup_old_workers() {
   touch "$CLEANUP_STAMP_FILE"
   chmod 600 "$CLEANUP_STAMP_FILE"
   if [[ ! "$days" =~ ^[0-9]+$ ]]; then
-    cleanup_log "warn invalid GLM_WORKER_RETENTION_DAYS=$days"
+    cleanup_log "warn invalid ${PROF_ENV_RETENTION_DAYS}=$days"
     return 0
   fi
   minutes="$((10#$days * 1440))"
@@ -2332,7 +2456,7 @@ run_tui_session() {
     args+=(--session-id "$session_id")
   fi
 
-  (cd "$cwd" && run_glm_claude "${args[@]}") || exit_code=$?
+  (cd "$cwd" && run_provider_claude "${args[@]}") || exit_code=$?
   printf 'EXIT_CODE=%d\n' "$exit_code"
   return "$exit_code"
 }
@@ -2750,8 +2874,8 @@ JQ
 quota_endpoint_url() {
   local base_pattern='^(https?://[A-Za-z0-9.-]+(:[0-9]+)?)(/|$)'
 
-  [[ "$ZAI_BASE_URL" =~ $base_pattern ]] ||
-    die "ZAI_BASE_URL must look like http(s)://host[:port][/path]"
+  [[ "$PROVIDER_BASE_URL" =~ $base_pattern ]] ||
+    die "PROVIDER_BASE_URL must look like http(s)://host[:port][/path]"
   printf '%s%s\n' "${BASH_REMATCH[1]}" "$QUOTA_ENDPOINT_PATH"
 }
 
@@ -2790,6 +2914,9 @@ quota_http_error_kind() {
 
 cmd_quota() {
   (($# == 0)) || die "quota does not accept arguments"
+  if [[ "$PROF_QUOTA_BACKEND" == none ]]; then
+    die "quota is not available for this provider"
+  fi
   require_command curl
   require_command jq
 
@@ -2803,19 +2930,19 @@ cmd_quota() {
   # type=2 and both Bigmodel selector headers join the key in curl's stdin
   # header block, so no selector reaches a process argument list either.
   local header_block
-  if [[ "$ZAI_QUOTA_SCOPE" == team ]]; then
+  if [[ "$PROVIDER_QUOTA_SCOPE" == team ]]; then
     url="$url?type=2"
     header_block="Authorization: $API_KEY
-Bigmodel-Organization: $ZAI_QUOTA_ORGANIZATION
-Bigmodel-Project: $ZAI_QUOTA_PROJECT"
+Bigmodel-Organization: $PROVIDER_QUOTA_ORGANIZATION
+Bigmodel-Project: $PROVIDER_QUOTA_PROJECT"
   else
     header_block="Authorization: $API_KEY"
   fi
 
-  local quota_dir="$GLM_AGENT_HOME/quota"
+  local quota_dir="$PROVIDER_AGENT_HOME/quota"
   local response_file="$quota_dir/response.json"
   local stderr_file="$quota_dir/stderr.log"
-  quota_private_dir "$GLM_AGENT_HOME"
+  quota_private_dir "$PROVIDER_AGENT_HOME"
   quota_private_dir "$quota_dir"
 
   trap quota_cleanup EXIT
@@ -2897,7 +3024,7 @@ Bigmodel-Project: $ZAI_QUOTA_PROJECT"
 
   if [[ -n "$error_kind" ]]; then
     printf 'QUOTA_STATUS=INVALID\n'
-    printf 'SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
+    printf 'SCOPE=%s\n' "$PROVIDER_QUOTA_SCOPE"
     printf 'RESPONSE=%s\n' "$response_file"
     printf 'ERROR_KIND=%s\n' "$error_kind"
     printf 'PROVIDER_CODE=%s\n' "$provider_code"
@@ -2905,7 +3032,7 @@ Bigmodel-Project: $ZAI_QUOTA_PROJECT"
   fi
 
   printf 'QUOTA_STATUS=OK\n'
-  printf 'SCOPE=%s\n' "$ZAI_QUOTA_SCOPE"
+  printf 'SCOPE=%s\n' "$PROVIDER_QUOTA_SCOPE"
   printf '%s\n' "$rendered"
   printf 'RESPONSE=%s\n' "$response_file"
   printf 'ERROR_KIND=\n'

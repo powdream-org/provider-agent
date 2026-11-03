@@ -84,7 +84,7 @@ dd_git_report() {
     return 0
   fi
   if [[ "$(dd_registry_get "$DD_SESSION" "$label" role)" == explorer ]]; then
-    printf 'GLM_WARN explorer_modified files=%s\n' "$(dd_join_files "$files")"
+    printf '%s explorer_modified files=%s\n' "$DD_EVT_WARN"  "$(dd_join_files "$files")"
   fi
   allow_file="$(dd_registry_dir "$DD_SESSION")/$label.allow"
   if [[ -s "$allow_file" ]]; then
@@ -100,7 +100,7 @@ dd_git_report() {
       fi
     done <<<"$files"
     if [[ -n "$outside" ]]; then
-      printf 'GLM_WARN out_of_scope files=%s\n' "$(dd_join_files "${outside%$'\n'}")"
+      printf '%s out_of_scope files=%s\n' "$DD_EVT_WARN"  "$(dd_join_files "${outside%$'\n'}")"
     fi
   fi
 }

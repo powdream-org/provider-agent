@@ -298,6 +298,8 @@ if [[ -x "$bump_script" ]]; then
   fixture="$TEST_ROOT/version fixture"
   mkdir -p "$fixture"
   cp -R "$REPO_DIR/." "$fixture/"
+  glm_version_before="$(jq -r '.plugins[] | select(.name == "glm-agent") | .version' \
+    "$fixture/.claude-plugin/marketplace.json")"
   "$fixture/scripts/bump-version.sh" qwen-agent 0.2.1 \
     >"$TEST_ROOT/bump.out" 2>"$TEST_ROOT/bump.err"
   assert_eq 'bump updates qwen profile' 'qwen-agent 0.2.1' \
@@ -307,13 +309,13 @@ if [[ -x "$bump_script" ]]; then
   assert_eq 'bump updates qwen marketplace entry' '0.2.1' \
     "$(jq -r '.plugins[] | select(.name == "qwen-agent") | .version' \
       "$fixture/.claude-plugin/marketplace.json")"
-  assert_eq 'bump leaves glm untouched' '1.2.1' \
+  assert_eq 'bump leaves glm untouched' "$glm_version_before" \
     "$(jq -r '.plugins[] | select(.name == "glm-agent") | .version' \
       "$fixture/.claude-plugin/marketplace.json")"
 
-  "$fixture/scripts/bump-version.sh" glm-agent 1.3.0 \
+  "$fixture/scripts/bump-version.sh" glm-agent 9.9.9 \
     >"$TEST_ROOT/bump2.out" 2>"$TEST_ROOT/bump2.err"
-  assert_eq 'bump updates glm profile' 'glm-agent 1.3.0' \
+  assert_eq 'bump updates glm profile' 'glm-agent 9.9.9' \
     "$("$fixture/glm/glm-agent" --version)"
 
   invalid_fixture="$TEST_ROOT/invalid version fixture"
